@@ -1,0 +1,113 @@
+Background workers are necessary for almost all projects, and for some applications, background code can be just as important as the web facing code.
+Writing you first background worker within the Rails can be a bit intimidating. It's a subject that doesn't seem to be covered very frequently, and requires you learn about a number of different gems. I'm going to be focusing on the tools that I use most frequently - Redis, Sidekiq and Foreman.
+Setting up Sidekiq
+Sidekiq is a background processing library for Ruby. It adds some handy methods to our classes which make background processing quite simple.
+Sidekiq relies on Redis (a key-value store) to maintain a job queue. That's the first thing you'll need to install. If you're using OSX and homebrew, it should be as simple as running brew install redis. After it's installed, follow the instructions to start it up.
+After Redis is installed and running, simply add gem "sidekiq" to your Gemfile and run bundle.
+Once the Sidekiq gem is installed, you can start it up by running bundle exec sidekiq.
+The Types of Background Workers
+Generally, your workers will be running under one of the following conditions:
+Immediately after an action is performed.
+A certain amount of time after an action is performed.
+Regularly, at set intervals.
+Let's go through and see how to implement each case individually.
+
+Running a worker immediately after an action is performed
+
+Sometimes the user will perform an action on our application that takes a considerable amount of time to complete. Some examples of this might be email, image processing, code highlighting. We don't want the user to sit there waiting for this action to complete, so we send it off to a background worker.
+
+Sending email is probably the most common example. To have our background worker send email for us, we'll simply make the following change, adding delay and dropping deliver:
+
+# UserMailer.welcome_email.deliver  ## NOT BACKGROUND
+UserMailer.delay.welcome_email
+Run a time consuming class method call on an ActiveRecord object in a background worker:
+
+# Project.do_long_running_action(@project.id)  ## NOT BACKGROUND
+  Project.delay.do_long_running_action(@project.id)
+  For a more complicated task, you can create a worker class that includes the Sidekiq::Worker module:
+
+# app/workers/project_cleanup_worker.rb
+    class ProjectCleanupWorker
+    include Sidekiq::Worker
+
+def perform(project_id)
+# do lots of project cleanup stuff here
+  end
+  end
+
+# ProjectCleanupWorker.new.perform(@project.id)  ## NOT BACKGROUND
+ProjectCleanupWorker.perform_async(@project.id)
+  Important note! Be sure to only pass primitives or simple objects as arguements to the worker, e.g. .perform_async(@project.id). These arguements must be serialized and placed into the Redis queue, and attempting to serialize an entire ActiveRecord object is inefficient and not likely to work.
+
+  Running a worker a set amount of time after an action is performed.
+
+  Delaying a worker by a set interval is quite similar to simply backgrounding it. Again, here are the before / after code samples.
+
+  Email:
+
+# UserMailer.welcome_email.deliver  ## NOT BACKGROUND
+
+  UserMailer.delay_for(5.minutes).welcome_email
+# OR
+  UserMailer.delay_until(1.week.from_now).welcome_email
+  ActiveRecord class method:
+
+# Project.do_long_running_action(@project.id)  ## NOT BACKGROUND
+
+    Project.delay_for(10.minutes).do_long_running_action(@project.id)
+# OR
+Project.delay_until(2.days.from_now).do_long_running_action(@project.id)
+  Sidekiq Worker:
+
+# app/workers/project_cleanup_worker.rb
+  class ProjectCleanupWorker
+  include Sidekiq::Worker
+
+def perform(project_id)
+# do lots of project cleanup stuff here
+  end
+  end
+
+# ProjectCleanupWorker.new.perform(@project.id)  ## NOT BACKGROUND
+
+ProjectCleanupWorker.perform_in(10.minutes, @project.id)
+# OR
+ProjectCleanupWorker.perform_at(2.days.from_now, @project.id)
+  Running a worker regularly, at set intervals
+
+  Sometimes, you'll want to set up a scheduled task to perform an action at a regular interval.
+
+  Let's say, for example, you have a user registration process. If someone starts the registration, but doesn't complete it, you may want to send them a reminder email.
+
+  My (and Heroku's) recommended approach for this is to create a rake task. If you haven't created your own Rake task before, it's pretty simple.
+
+  lib/tasks/remind_of_registration.rake
+  1 desc "Remind users if they haven't completed registration"
+  2 task :remind_of_registration => :environment do
+  3   puts "Reminding users of registration"
+  4   # ...
+  5   puts "done."
+  6 end
+  Note! that :environment in the task definition is important! It loads your Rails environment for the Rake task.
+
+  For easier testing, you may want to create a separate object to complete the task for you. Despite the fact that this particular type of scheduled task has nothing to do with Sidekiq, I usually still put objects for completing tasks into the app/workers directory and name them [...]_worker.rb.
+
+  That setup would look something like this:
+
+  lib/tasks/remind_of_registration.rake
+  1 desc "Remind users if they haven't completed registration"
+  2 task :remind_of_registration => :environment do
+  3   puts "Reminding users of registration"
+  4   RegistrationReminderWorker.new.perform
+  5   puts "done."
+  6 end
+  app/workers/registration_reminder_worker.rb
+  1 class RegistrationReminderWorker
+  2   def perform
+  3     # ...
+  4   end
+  5 end
+  At this point, you can call rake remind_of_registration from the command line to run this worker--so, that's what we need to run at some fixed interval.
+
+  If you're running on Heroku, you can use the Scheduler addon, which is free and very easy to use. The only downside is that there isn't a ton of flexibility for the intervals that you can choose
+

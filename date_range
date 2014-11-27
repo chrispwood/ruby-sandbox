@@ -1,0 +1,16 @@
+require 'date'
+require 'time'
+
+last_run_at = '2014-04-29 11:30:29'
+
+range = DateTime.parse(last_run_at).to_date .. Date.today
+
+range.each do |r|
+  puts r
+end
+
+range = 'Tue, 29 Apr 2014'..'Tue, 29 Apr 2014'
+
+range.each do |r|
+  puts r
+end
